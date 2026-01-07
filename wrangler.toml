@@ -1,0 +1,9 @@
+name = "stx402-agents"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "stx402-agents-db"
+database_id = "41ca10c5-4341-4d42-84c8-fccd0d57ec32"

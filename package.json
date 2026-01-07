@@ -1,0 +1,22 @@
+{
+  "name": "stx402-agents",
+  "version": "1.0.0",
+  "description": "Stacks Agent Protocol - ERC-8004 inspired registry with x402 payments and sBTC support",
+  "module": "src/index.ts",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create stx402-agents-db",
+    "db:migrate": "wrangler d1 execute stx402-agents-db --remote --file schema.sql",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "hono": "^4.11.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241230.0",
+    "@types/bun": "latest",
+    "wrangler": "^3.0.0"
+  }
+}
