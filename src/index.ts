@@ -11,12 +11,37 @@ import { orchestrate, findBestAgent, getAgentTasks } from './orchestrator';
 
 const HIRO_API = 'https://api.hiro.so';
 
-// Payment contract
-const CONTRACT = {
-  address: 'SPP5ZMH9NQDFD2K5CEQZ6P02AP8YPWMQ75TJW20M',
-  name: 'simple-oracle',
-  orchestrationPrice: 10000, // 0.01 STX for orchestration
+// Payment config - sBTC only
+const PAYMENT_ADDRESS = 'SPKH9AWG0ENZ87J1X0PBD4HETP22G8W22AFNVF8K'
+const PRICING = {
+  orchestration: 100, // 100 sats (~$0.10) for orchestration
+  register: 50, // 50 sats (~$0.05) for agent registration
 };
+
+// sBTC contract
+const SBTC_CONTRACT = {
+  address: 'SP3K8BC0PPEVCV7NZ6QSRWPQ2JE9E5B6N3PA0KBR9',
+  name: 'token-sbtc',
+};
+
+// Legacy CONTRACT constant for compatibility
+const CONTRACT = {
+  address: PAYMENT_ADDRESS,
+  name: 'sbtc-payment',
+  orchestrationPrice: PRICING.orchestration,
+  orchestrationPriceSbtc: PRICING.orchestration,
+  registerPrice: PRICING.register,
+  registerPriceSbtc: PRICING.register,
+};
+
+type PaymentTokenType = 'STX' | 'sBTC';
+
+function getPaymentTokenType(c: any): PaymentTokenType {
+  const queryToken = c.req.query('tokenType');
+  const headerToken = c.req.header('X-PAYMENT-TOKEN-TYPE');
+  const tokenStr = (headerToken || queryToken || 'STX').toUpperCase();
+  return tokenStr === 'SBTC' ? 'sBTC' : 'STX';
+}
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -154,8 +179,8 @@ app.get('/leaderboard', async (c) => {
 // Paid Endpoints (x402)
 // ============================================
 
-// x402 Payment Required response
-function paymentRequired(c: any, resource: string, price: number) {
+// x402 Payment Required response - sBTC only
+function paymentRequired(c: any, resource: string, _priceStx: number, priceSbtc: number) {
   const nonce = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
 
@@ -163,25 +188,22 @@ function paymentRequired(c: any, resource: string, price: number) {
     error: 'Payment Required',
     code: 'PAYMENT_REQUIRED',
     resource,
-    payment: {
-      contract: `${CONTRACT.address}.${CONTRACT.name}`,
-      function: 'call-with-stx',
-      price,
-      token: 'STX',
-      recipient: CONTRACT.address,
-      network: 'mainnet',
-    },
+    nonce,
+    expiresAt,
+    network: 'mainnet',
+    maxAmountRequired: priceSbtc.toString(),
+    payTo: PAYMENT_ADDRESS,
+    tokenType: 'sBTC',
+    tokenContract: SBTC_CONTRACT,
     instructions: [
-      '1. Call the contract function with STX payment',
+      '1. Call sBTC transfer with amount to recipient',
       '2. Wait for transaction confirmation',
       '3. Retry request with X-Payment header containing txid',
     ],
-    nonce,
-    expiresAt,
   }, 402);
 }
 
-// Verify payment
+// Verify sBTC payment
 async function verifyPayment(txid: string): Promise<{ valid: boolean; sender?: string; error?: string }> {
   try {
     const normalizedTxid = txid.startsWith('0x') ? txid : `0x${txid}`;
@@ -197,13 +219,11 @@ async function verifyPayment(txid: string): Promise<{ valid: boolean; sender?: s
       return { valid: false, error: `Transaction status: ${tx.tx_status}` };
     }
 
-    if (tx.tx_type !== 'contract_call') {
-      return { valid: false, error: 'Not a contract call' };
-    }
-
-    const expectedContract = `${CONTRACT.address}.${CONTRACT.name}`;
-    if (tx.contract_call?.contract_id !== expectedContract) {
-      return { valid: false, error: 'Wrong contract' };
+    // Accept sBTC transfers
+    if (tx.tx_type === 'contract_call') {
+      if (!tx.contract_call?.contract_id?.includes('sbtc')) {
+        return { valid: false, error: 'Not an sBTC transfer' };
+      }
     }
 
     return { valid: true, sender: tx.sender_address };
@@ -217,7 +237,7 @@ app.post('/agents', async (c) => {
   const paymentTxid = c.req.header('X-Payment');
 
   if (!paymentTxid) {
-    return paymentRequired(c, '/agents', 5000); // 0.005 STX to register
+    return paymentRequired(c, '/agents', CONTRACT.registerPrice, CONTRACT.registerPriceSbtc);
   }
 
   const verification = await verifyPayment(paymentTxid);
@@ -267,7 +287,7 @@ app.post('/orchestrate', async (c) => {
   const paymentTxid = c.req.header('X-Payment');
 
   if (!paymentTxid) {
-    return paymentRequired(c, '/orchestrate', CONTRACT.orchestrationPrice);
+    return paymentRequired(c, '/orchestrate', CONTRACT.orchestrationPrice, CONTRACT.orchestrationPriceSbtc);
   }
 
   const verification = await verifyPayment(paymentTxid);
