@@ -74,9 +74,13 @@ app.get('/', (c) => {
         'GET /capabilities - List all capabilities',
         'GET /leaderboard - Top rated agents',
       ],
+      x402_discovery: [
+        'GET /register - x402 discovery for agent registration',
+        'GET /orchestrate - x402 discovery for orchestration',
+      ],
       paid: [
-        'POST /agents - Register new agent (signature required)',
-        'POST /orchestrate - Execute multi-agent task chain',
+        'POST /register - Register new agent (x402 payment required)',
+        'POST /orchestrate - Execute multi-agent task chain (x402 payment required)',
       ],
     },
     inspired_by: {
@@ -176,8 +180,195 @@ app.get('/leaderboard', async (c) => {
 });
 
 // ============================================
+// x402 Discovery Endpoints
+// ============================================
+
+// x402 discovery for /register endpoint
+app.get('/register', (c) => {
+  return c.json({
+    x402Version: 1,
+    name: 'x402 Agents Registry',
+    accepts: [{
+      scheme: 'exact',
+      network: 'stacks',
+      maxAmountRequired: PRICING.register.toString(),
+      resource: '/register',
+      description: 'Register an AI agent with the x402 agent registry',
+      mimeType: 'application/json',
+      payTo: PAYMENT_ADDRESS,
+      maxTimeoutSeconds: 300,
+      asset: 'sBTC',
+      extra: {
+        tokenContract: SBTC_CONTRACT,
+      },
+      outputSchema: {
+        input: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Human-readable agent name' },
+            endpoint: { type: 'string', description: 'Base URL for agent API' },
+            capabilities: { type: 'array', items: { type: 'string' }, description: 'List of agent capabilities' },
+            payment_address: { type: 'string', description: 'Stacks address for receiving payments' },
+            payment_tokens: { type: 'array', items: { type: 'string', enum: ['STX', 'sBTC'] }, description: 'Accepted payment tokens' },
+            metadata: { type: 'object', description: 'Additional agent metadata' },
+            signature: { type: 'string', description: 'Signed message proving ownership' },
+          },
+          required: ['name', 'endpoint', 'capabilities', 'payment_address', 'signature'],
+        },
+        output: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            message: { type: 'string' },
+            agent: {
+              type: 'object',
+              properties: {
+                id: { type: 'string' },
+                name: { type: 'string' },
+                owner: { type: 'string' },
+                endpoint: { type: 'string' },
+                capabilities: { type: 'array', items: { type: 'string' } },
+                payment_address: { type: 'string' },
+                payment_tokens: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
+    }],
+  });
+});
+
+// x402 discovery for /orchestrate endpoint
+app.get('/orchestrate', (c) => {
+  return c.json({
+    x402Version: 1,
+    name: 'x402 Agent Orchestration',
+    accepts: [{
+      scheme: 'exact',
+      network: 'stacks',
+      maxAmountRequired: PRICING.orchestration.toString(),
+      resource: '/orchestrate',
+      description: 'Execute multi-agent task chains with automatic agent discovery and routing',
+      mimeType: 'application/json',
+      payTo: PAYMENT_ADDRESS,
+      maxTimeoutSeconds: 300,
+      asset: 'sBTC',
+      extra: {
+        tokenContract: SBTC_CONTRACT,
+      },
+      outputSchema: {
+        input: {
+          type: 'object',
+          properties: {
+            tasks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  capability: { type: 'string', description: 'Required capability for this task' },
+                  input: { type: 'object', description: 'Input data for the task' },
+                  max_payment: { type: 'number', description: 'Maximum payment in satoshis' },
+                },
+                required: ['capability', 'input'],
+              },
+              description: 'List of tasks to execute',
+            },
+            strategy: {
+              type: 'string',
+              enum: ['sequential', 'parallel', 'best_agent'],
+              description: 'Execution strategy',
+            },
+          },
+          required: ['tasks'],
+        },
+        output: {
+          type: 'object',
+          properties: {
+            success: { type: 'boolean' },
+            orchestration: {
+              type: 'object',
+              properties: {
+                strategy: { type: 'string' },
+                tasks_requested: { type: 'number' },
+                tasks_completed: { type: 'number' },
+              },
+            },
+            results: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  capability: { type: 'string' },
+                  agent_id: { type: 'string' },
+                  success: { type: 'boolean' },
+                  response: { type: 'object' },
+                  time_ms: { type: 'number' },
+                },
+              },
+            },
+            total_time_ms: { type: 'number' },
+            caller: { type: 'string' },
+          },
+        },
+      },
+    }],
+  });
+});
+
+// ============================================
 // Paid Endpoints (x402)
 // ============================================
+
+// Shared registration handler
+async function handleRegistration(c: any) {
+  const paymentTxid = c.req.header('X-Payment');
+
+  if (!paymentTxid) {
+    return paymentRequired(c, '/register', CONTRACT.registerPrice, CONTRACT.registerPriceSbtc);
+  }
+
+  const verification = await verifyPayment(paymentTxid);
+  if (!verification.valid) {
+    return c.json({
+      error: 'Payment verification failed',
+      details: verification.error,
+    }, 403);
+  }
+
+  const body = await c.req.json() as RegisterAgentRequest;
+
+  // Validate required fields
+  if (!body.name || !body.endpoint || !body.capabilities?.length || !body.payment_address) {
+    return c.json({
+      error: 'Missing required fields',
+      required: ['name', 'endpoint', 'capabilities', 'payment_address', 'signature'],
+    }, 400);
+  }
+
+  // Signature verification (simplified for MVP)
+  if (!body.signature) {
+    return c.json({
+      error: 'Signature required to prove ownership',
+      message_to_sign: `Register agent: ${body.name} at ${body.endpoint}`,
+    }, 400);
+  }
+
+  try {
+    const agent = await registerAgent(c.env.DB, body, verification.sender!);
+
+    return c.json({
+      success: true,
+      message: 'Agent registered successfully',
+      agent,
+    }, 201);
+  } catch (error) {
+    return c.json({
+      error: 'Registration failed',
+      details: String(error),
+    }, 500);
+  }
+}
 
 // x402 Payment Required response - sBTC only
 function paymentRequired(c: any, resource: string, _priceStx: number, priceSbtc: number) {
@@ -232,55 +423,11 @@ async function verifyPayment(txid: string): Promise<{ valid: boolean; sender?: s
   }
 }
 
-// Register new agent (requires payment + signature)
-app.post('/agents', async (c) => {
-  const paymentTxid = c.req.header('X-Payment');
+// Register new agent (requires payment + signature) - x402 canonical endpoint
+app.post('/register', handleRegistration);
 
-  if (!paymentTxid) {
-    return paymentRequired(c, '/agents', CONTRACT.registerPrice, CONTRACT.registerPriceSbtc);
-  }
-
-  const verification = await verifyPayment(paymentTxid);
-  if (!verification.valid) {
-    return c.json({
-      error: 'Payment verification failed',
-      details: verification.error,
-    }, 403);
-  }
-
-  const body = await c.req.json() as RegisterAgentRequest;
-
-  // Validate required fields
-  if (!body.name || !body.endpoint || !body.capabilities?.length || !body.payment_address) {
-    return c.json({
-      error: 'Missing required fields',
-      required: ['name', 'endpoint', 'capabilities', 'payment_address', 'signature'],
-    }, 400);
-  }
-
-  // Signature verification (simplified for MVP)
-  if (!body.signature) {
-    return c.json({
-      error: 'Signature required to prove ownership',
-      message_to_sign: `Register agent: ${body.name} at ${body.endpoint}`,
-    }, 400);
-  }
-
-  try {
-    const agent = await registerAgent(c.env.DB, body, verification.sender!);
-
-    return c.json({
-      success: true,
-      message: 'Agent registered successfully',
-      agent,
-    }, 201);
-  } catch (error) {
-    return c.json({
-      error: 'Registration failed',
-      details: String(error),
-    }, 500);
-  }
-});
+// Legacy registration endpoint (same handler)
+app.post('/agents', handleRegistration);
 
 // Orchestrate multi-agent task
 app.post('/orchestrate', async (c) => {
