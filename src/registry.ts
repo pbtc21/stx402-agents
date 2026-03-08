@@ -77,17 +77,21 @@ function hashStructuredMessage(message: string): Uint8Array {
  * Verify a Stacks message signature cryptographically.
  *
  * The signature must be a base64-encoded 65-byte recoverable ECDSA signature:
- *   byte[0]     = recovery id (0 or 1)
+ *   byte[0]      = raw recovery flag from wallet (may be 0/1, 27/28, or 31/32)
  *   bytes[1..64] = compact signature (r || s, 32 bytes each)
  *
  * This is the format produced by @stacks/transactions signMessage() and the
- * Leather / Xverse wallet signing APIs.
+ * Leather / Xverse wallet signing APIs. Wallets typically emit:
+ *   27/28 = uncompressed-style recovery flag (Bitcoin legacy)
+ *   31/32 = compressed-style recovery flag (Stacks / Leather)
+ *   0/1   = raw recovery bit (noble/secp256k1 native)
  *
  * Verification steps:
  *   1. Build the double-SHA256 hash of the Bitcoin-prefixed message.
- *   2. Recover the secp256k1 public key from the (recoveryId, r, s) signature.
- *   3. Derive the Stacks SP address from the recovered compressed public key.
- *   4. Compare against the caller's claimed address.
+ *   2. Normalise the recovery flag to 0/1 (noble/secp256k1 v2+ requirement).
+ *   3. Recover the secp256k1 public key using compact sig (64 bytes) + recovery.
+ *   4. Derive the Stacks SP/SM address from the recovered compressed public key.
+ *   5. Compare against the caller's claimed address.
  *
  * @param message   The exact plaintext that was signed.
  * @param signature Base64-encoded 65-byte recoverable Stacks signature.
@@ -98,18 +102,35 @@ export async function verifySignature(message: string, signature: string, addres
   if (!signature || !address) return false;
 
   try {
-    // Decode base64 → 65 bytes: [recoveryId(1)] + [r(32)] + [s(32)]
+    // Decode base64 → 65 bytes: [rawRecovery(1)] + [r(32)] + [s(32)]
     const sigBytes = Uint8Array.from(atob(signature), c => c.charCodeAt(0));
     if (sigBytes.length !== 65) return false;
 
-    // @noble/secp256k1 v3 recoverPublicKey expects the full 65-byte
-    // "recovered" format (recovery byte first) when prehash is false.
     const msgHash = hashStructuredMessage(message);
 
-    // prehash: false because we already have the final hash
-    const pubkeyBytes = recoverPublicKey(sigBytes, msgHash, { prehash: false });
+    // Normalise the recovery flag:
+    //   27/28 → 0/1  (Ethereum / Bitcoin-legacy uncompressed style)
+    //   31/32 → 0/1  (Stacks / Leather compressed style)
+    //   0/1   → 0/1  (noble native — pass through)
+    const rawFlag = sigBytes[0];
+    const recovery = rawFlag >= 27 ? (rawFlag - 27) % 2 : rawFlag % 2;
 
-    // Derive Stacks address from the recovered compressed public key
+    // Extract the compact 64-byte sig (r || s) and prepend the normalised
+    // recovery byte so noble/secp256k1 v3 can parse it as 'recovered' format.
+    const compactSig = sigBytes.subarray(1); // 64 bytes: r || s
+    const recoveredSig = new Uint8Array(65);
+    recoveredSig[0] = recovery;
+    recoveredSig.set(compactSig, 1);
+
+    // recoverPublicKey(signature, msgHash, opts):
+    //   - signature: 65-byte 'recovered' format [recovery(0/1)] + [r] + [s]
+    //   - msgHash:   pre-computed hash (prehash: false skips sha256 inside noble)
+    const pubkeyBytes = recoverPublicKey(recoveredSig, msgHash, { prehash: false });
+
+    // Derive Stacks address from the recovered compressed public key.
+    // NOTE: c32encode is a hand-rolled implementation. If @stacks/transactions
+    // becomes available in this edge runtime, prefer its c32checkEncode() for
+    // a battle-tested reference implementation.
     const recoveredAddress = pubkeyToStacksAddress(pubkeyBytes);
 
     // Case-insensitive compare (c32 produces uppercase; be defensive)
