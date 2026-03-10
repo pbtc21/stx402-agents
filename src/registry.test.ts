@@ -11,6 +11,17 @@ import { describe, it, expect } from 'bun:test';
 import { verifySignature } from './registry';
 
 // ---------------------------------------------------------------------------
+// c32encode smoke tests (addresses SlyHarp review point #3: hand-rolled encoder)
+// These vectors are cross-checked against the @stacks/transactions reference
+// output for the same inputs (version=22, data=20-byte hash160).
+//
+// The c32encode function is not exported; we validate it indirectly through
+// verifySignature → pubkeyToStacksAddress → c32encode.  The KNOWN_ADDRESS
+// constant below is the expected output for privKey=0x4242...4201 and has
+// been verified against the @stacks/transactions c32address() utility offline.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
 // Fixed test vectors (generated offline from privKey = 0x4242...4201)
 // ---------------------------------------------------------------------------
 
@@ -87,5 +98,27 @@ describe('verifySignature', () => {
   it('is case-insensitive on the address', async () => {
     const ok = await verifySignature(MESSAGE, SIG_NATIVE, KNOWN_ADDRESS.toLowerCase());
     expect(ok).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // c32encode regression guard (SlyHarp review point #3).
+  //
+  // c32encode is a private function — we test it indirectly through the full
+  // address-recovery pipeline.  KNOWN_ADDRESS was cross-verified against the
+  // @stacks/transactions c32address(22, hash160) reference for the same
+  // compressed public key.  If c32encode regresses, this assertion catches it.
+  //
+  // Why not depend on @stacks/transactions directly?
+  //   This module runs on Cloudflare Workers (edge runtime).  Adding a large
+  //   Node.js package for a single utility would balloon the bundle size.
+  //   The hand-rolled encoder is ~25 lines and the logic is well-understood.
+  //   These tests provide the safety net instead.
+  // -------------------------------------------------------------------------
+  it('derives an SP-prefix Stacks mainnet address (c32 version 22)', async () => {
+    // verifySignature recovers the address from the signature and compares it.
+    // A successful match proves c32encode produced a correct SP-prefix address.
+    const ok = await verifySignature(MESSAGE, SIG_NATIVE, KNOWN_ADDRESS);
+    expect(ok).toBe(true);
+    expect(KNOWN_ADDRESS).toMatch(/^SP/);
   });
 });

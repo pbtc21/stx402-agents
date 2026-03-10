@@ -122,9 +122,14 @@ export async function verifySignature(message: string, signature: string, addres
     recoveredSig[0] = recovery;
     recoveredSig.set(compactSig, 1);
 
-    // recoverPublicKey(signature, msgHash, opts):
-    //   - signature: 65-byte 'recovered' format [recovery(0/1)] + [r] + [s]
-    //   - msgHash:   pre-computed hash (prehash: false skips sha256 inside noble)
+    // @noble/secp256k1 v3 API (installed: ^3.0.0):
+    //   recoverPublicKey(signature, message, opts)
+    //   - signature: 65-byte 'recovered' format [recovery(0/1)] + [r(32)] + [s(32)]
+    //   - message:   pre-computed hash bytes (prehash: false skips the internal sha256)
+    //
+    // NOTE: This differs from the v2 API which was recoverPublicKey(msgHash, sig, recovery).
+    // v3 always expects the 'recovered' 65-byte format; the recovery id is embedded in
+    // byte[0] rather than passed as a separate argument.
     const pubkeyBytes = recoverPublicKey(recoveredSig, msgHash, { prehash: false });
 
     // Derive Stacks address from the recovered compressed public key.
