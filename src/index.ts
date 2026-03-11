@@ -346,12 +346,25 @@ async function handleRegistration(c: any) {
     }, 400);
   }
 
-  // Signature verification (simplified for MVP)
+  // Signature verification: require a signature and cryptographically verify it
   if (!body.signature) {
     return c.json({
       error: 'Signature required to prove ownership',
       message_to_sign: `Register agent: ${body.name} at ${body.endpoint}`,
     }, 400);
+  }
+
+  // The caller must prove they own the payment_address by signing the canonical message.
+  // verifySignature recovers the public key from the secp256k1 signature and derives
+  // the Stacks address, then compares it against the claimed payment_address.
+  const expectedMessage = `Register agent: ${body.name} at ${body.endpoint}`;
+  const sigValid = await verifySignature(expectedMessage, body.signature, body.payment_address);
+  if (!sigValid) {
+    return c.json({
+      error: 'Invalid signature: could not verify ownership of the claimed address',
+      message_to_sign: expectedMessage,
+      hint: 'Sign the exact message above with the private key for payment_address and provide the base64-encoded 65-byte signature',
+    }, 401);
   }
 
   try {
